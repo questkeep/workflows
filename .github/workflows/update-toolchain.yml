@@ -7,7 +7,7 @@ on:
     inputs:
       tools:
         description: >-
-          JSON object that maps each tool pinned in mise.toml to a version label: "latest" (newest
+          JSON object that maps each tool pinned in mise.toml to a version label: "latest" or "stable" (newest
           release), "lts" (newest release of the latest LTS major, e.g. for node) or a version
           prefix such as "26" (newest release of that major).
         type: string
@@ -90,9 +90,11 @@ jobs:
               echo "::notice::$tool is not pinned in mise.toml, skipped"
               continue
             fi
+            # "latest" and "stable" are not version prefixes (mise would match nothing, or the
+            # rolling tag), so they mean "no filter". Anything else is a mise version request:
+            # "lts" (the current LTS line of node) or a prefix such as "26".
             case "$label" in
-              latest) spec="$tool" ;;
-              lts) spec="$tool@$(mise latest "$tool@lts" | cut -d. -f1)" ;;
+              latest | stable) spec="$tool" ;;
               *) spec="$tool@$label" ;;
             esac
             pin "$tool" "$(newest "$spec")"

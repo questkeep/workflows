@@ -32,7 +32,7 @@ jobs:
   upgrade:
     uses: questkeep/workflows/.github/workflows/update-toolchain.yml@main
     with:
-      tools: '{"node": "lts", "pnpm": "latest", "rust": "latest"}'
+      tools: '{"node": "lts", "pnpm": "latest", "rust": "stable"}'
 ```
 
 ### Inputs
@@ -48,8 +48,8 @@ Version labels:
 
 | Label | Picks |
 |---|---|
-| `latest` | the newest stable release |
-| `lts` | the newest release of the latest LTS major (`mise latest <tool>@lts`), for tools that have one such as `node`; never an odd-numbered Current release |
+| `latest` or `stable` | the newest stable release (`stable` reads better for Rust) |
+| `lts` | the newest release of the current LTS line (mise's `<tool>@lts` request), for tools that have one such as `node`; never an odd-numbered Current release |
 | a prefix such as `26` or `1.100` | the newest release below that prefix |
 
 Tool names are the plain names used in `mise.toml` (`node`, `pnpm`, `rust`).
