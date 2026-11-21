@@ -1,0 +1,136 @@
+name: Update toolchain
+
+# Reusable workflow: opens (or updates) a pull request that bumps the exact versions pinned in
+# the calling repository's mise.toml. See README.md for how to call it.
+on:
+  workflow_call:
+    inputs:
+      tools:
+        description: >-
+          JSON object that maps each tool pinned in mise.toml to a version label: "latest" (newest
+          release), "lts" (newest release of the latest LTS major, e.g. for node) or a version
+          prefix such as "26" (newest release of that major).
+        type: string
+        required: true
+      minimum-release-age:
+        description: Only use releases at least this old (mise duration, e.g. 2d).
+        type: string
+        default: 2d
+      branch:
+        description: Branch of the pull request.
+        type: string
+        default: chore/mise-upgrade
+      commit-message:
+        description: Commit message and pull request title.
+        type: string
+        default: "build(deps): update mise tools"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-toolchain-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    name: Upgrade mise tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v5
+        with:
+          # Only the mise binary: the versions are resolved, not installed.
+          install: false
+          cache: false
+
+      - name: Upgrade the pinned versions
+        env:
+          TOOLS: ${{ inputs.tools }}
+          MIN_AGE: ${{ inputs.minimum-release-age }}
+        run: |
+          set -euo pipefail
+          mise trust
+
+          echo "$TOOLS" | jq -e 'type == "object" and (to_entries | all(.key | test("^[A-Za-z0-9_-]+$")) and all(.value | type == "string"))' > /dev/null \
+            || { echo "::error::'tools' must be a JSON object of plain tool names to version labels"; exit 1; }
+
+          # Newest stable release of "tool" or "tool@prefix" that is at least $MIN_AGE old.
+          newest() {
+            mise ls-remote "$1" --minimum-release-age "$MIN_AGE" | grep -E '^[0-9]+(\.[0-9]+){2}$' | sort -V | tail -n 1
+          }
+
+          # The version mise.toml pins for a tool, in the plain or the `{ version = ... }` form.
+          current_of() {
+            sed -nE "s/^${1} = (\{ version = )?\"([^\"]+)\".*/\2/p" mise.toml
+          }
+
+          # Writes the exact version into mise.toml, only ever upwards.
+          pin() {
+            tool="$1"; version="$2"; current="$(current_of "$tool")"
+            [ -n "$version" ] || { echo "::error::no release found for $tool"; exit 1; }
+            if [ "$current" != "$version" ] && [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$version" ]; then
+              sed -i -E "s/^(${tool} = (\{ version = )?\")[^\"]+/\1${version}/" mise.toml
+              echo "$tool: $current -> $version"
+            else
+              echo "$tool: $current is current"
+            fi
+          }
+
+          # Every tool pinned in mise.toml must be listed in `tools`, or it would never update.
+          for tool in $(mise ls --local --json | jq -r 'keys[]' | tr -d '\r'); do
+            echo "$TOOLS" | jq -e --arg t "$tool" 'has($t)' > /dev/null \
+              || { echo "::error::$tool is in mise.toml but missing from the 'tools' input of the update workflow"; exit 1; }
+          done
+
+          while read -r tool label; do
+            if [ -z "$(current_of "$tool")" ]; then
+              echo "::notice::$tool is not pinned in mise.toml, skipped"
+              continue
+            fi
+            case "$label" in
+              latest) spec="$tool" ;;
+              lts) spec="$tool@$(mise latest "$tool@lts" | cut -d. -f1)" ;;
+              *) spec="$tool@$label" ;;
+            esac
+            pin "$tool" "$(newest "$spec")"
+          done < <(echo "$TOOLS" | jq -r 'to_entries[] | "\(.key) \(.value)"' | tr -d '\r')
+
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ inputs.branch }}
+          TITLE: ${{ inputs.commit-message }}
+          MIN_AGE: ${{ inputs.minimum-release-age }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+
+          if git diff --quiet -- mise.toml; then
+            echo "mise.toml is up to date."
+            # An open update pull request is obsolete now (merged elsewhere or versions reverted).
+            if [ -n "$existing" ]; then
+              gh pr close "$existing" --delete-branch --comment "mise.toml is already up to date, closing."
+            fi
+            exit 0
+          fi
+
+          changes="$(git diff -U0 -- mise.toml | grep -E '^[+-][a-z]' || true)"
+          body="$(printf 'Newest releases that are at least %s old.\n\n```diff\n%s\n```\n\nThis branch is rebuilt from the default branch and force-pushed on every run: do not add commits to it. Pull requests opened by GITHUB_TOKEN do not start CI: close and reopen this pull request to run the checks.' "$MIN_AGE" "$changes")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Always start from the checked-out default branch, so an existing branch is replaced.
+          git switch -C "$BRANCH"
+          git commit -m "$TITLE" -- mise.toml
+          git push --force origin "$BRANCH"
+
+          if [ -z "$existing" ]; then
+            gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body "$body"
+          else
+            # The force push already updated the pull request's commits; refresh its text too.
+            gh pr edit "$existing" --title "$TITLE" --body "$body"
+          fi
