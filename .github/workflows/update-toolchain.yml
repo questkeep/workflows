@@ -24,10 +24,16 @@ on:
         description: Commit message and pull request title.
         type: string
         default: "build(deps): update mise tools"
+    secrets:
+      TOOLCHAIN_UPDATE_APP_PRIVATE_KEY:
+        description: >-
+          Private key of the GitHub App that opens the pull request (the organization secret of the
+          same name). Callers pass it with `secrets: inherit`.
+        required: true
 
+# The app token does the writing, so GITHUB_TOKEN needs no more than reading.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: update-toolchain-${{ github.repository }}
@@ -38,7 +44,21 @@ jobs:
     name: Upgrade mise tools
     runs-on: ubuntu-latest
     steps:
+      # A pull request opened with GITHUB_TOKEN needs the "Allow GitHub Actions to create and approve
+      # pull requests" setting and starts no CI. The app token (limited to this repository) does neither.
+      - name: Create the app token
+        id: app-token
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          app-id: ${{ vars.TOOLCHAIN_UPDATE_APP_ID }}
+          private-key: ${{ secrets.TOOLCHAIN_UPDATE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - uses: actions/checkout@v7
+        with:
+          # Also used by `git push` below.
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: jdx/mise-action@v5
         with:
@@ -102,7 +122,7 @@ jobs:
 
       - name: Open or update the pull request
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ inputs.branch }}
           TITLE: ${{ inputs.commit-message }}
           MIN_AGE: ${{ inputs.minimum-release-age }}
@@ -121,7 +141,7 @@ jobs:
           fi
 
           changes="$(git diff -U0 -- mise.toml | grep -E '^[+-][a-z]' || true)"
-          body="$(printf 'Newest releases that are at least %s old.\n\n```diff\n%s\n```\n\nThis branch is rebuilt from the default branch and force-pushed on every run: do not add commits to it. Pull requests opened by GITHUB_TOKEN do not start CI: close and reopen this pull request to run the checks.' "$MIN_AGE" "$changes")"
+          body="$(printf 'Newest releases that are at least %s old.\n\n```diff\n%s\n```\n\nThis branch is rebuilt from the default branch and force-pushed on every run: do not add commits to it.' "$MIN_AGE" "$changes")"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

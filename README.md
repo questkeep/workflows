@@ -25,12 +25,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   upgrade:
     uses: questkeep/workflows/.github/workflows/update-toolchain.yml@main
+    secrets: inherit
     with:
       tools: '{"node": "lts", "pnpm": "latest", "rust": "stable"}'
 ```
@@ -71,9 +71,12 @@ branch and pull request are updated in place (commits, title and description); i
 current by then, an open pull request is closed and its branch deleted. Do not add commits to the
 branch.
 
-Pull requests opened with `GITHUB_TOKEN` do not start CI: close and reopen the pull request to run
-the checks. The organization (or repository) setting **Allow GitHub Actions to create and approve
-pull requests** must be on.
+The pull request is opened by a GitHub App, not by `GITHUB_TOKEN`, so the setting **Allow GitHub
+Actions to create and approve pull requests** is not needed and CI starts as for any other pull
+request. The workflow reads the organization variable `TOOLCHAIN_UPDATE_APP_ID` and the
+organization secret `TOOLCHAIN_UPDATE_APP_PRIVATE_KEY` (hence `secrets: inherit` in the caller).
+Both must be available to the calling repository, and the app needs the repository permissions
+**Contents** and **Pull requests** (read and write) and must be installed on it.
 
 ## Changing a workflow here
 
